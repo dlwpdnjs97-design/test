@@ -1,0 +1,297 @@
+<title>오늘 뭐 먹지</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Do+Hyeon&family=Gowun+Dodum&display=swap">
+<style>
+/* Layout: 분식집 메뉴판 느낌. 왼쪽 룰렛, 오른쪽 메뉴판(좁으면 위아래로 쌓임) */
+:root {
+  --bg: #ffffff;
+  --surface: #faf8f3;
+  --ink: #23262e;
+  --muted: #6b6a63;
+  --line: #e2ddcf;
+  --accent: #d9452b;     /* 떡볶이 빨강 */
+  --accent-ink: #ffffff;
+  --pickle: #f2c230;     /* 단무지 노랑 */
+  --s1: #d9452b; --s2: #f2c230; --s3: #3b7d5c; --s4: #2f5c9e; --s5: #e8875b; --s6: #7a5ca8;
+  --font-display: "Do Hyeon", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --font-body: "Gowun Dodum", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 16px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 48px;
+}
+.wrap { max-width: 980px; margin: 0 auto; display: grid; gap: 28px; }
+header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 8px 24px; }
+h1 { font-family: var(--font-display); font-weight: 400; font-size: clamp(40px, 7vw, 64px); line-height: 1; margin: 0; letter-spacing: -0.01em; }
+h1 .q { color: var(--accent); }
+header p { margin: 0; color: var(--muted); max-width: 34ch; }
+
+.main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+@media (max-width: 760px) { .main { grid-template-columns: 1fr; } }
+
+.stage { display: grid; gap: 18px; justify-items: center; }
+.wheel-box { position: relative; width: 100%; max-width: 440px; aspect-ratio: 1; }
+canvas { width: 100%; height: 100%; display: block; }
+.pointer {
+  position: absolute; top: -6px; left: 50%; transform: translateX(-50%);
+  width: 0; height: 0; border-left: 16px solid transparent; border-right: 16px solid transparent;
+  border-top: 30px solid var(--ink); filter: drop-shadow(0 2px 2px rgba(0,0,0,.2));
+}
+.spin {
+  font-family: var(--font-display); font-size: 26px; letter-spacing: .02em;
+  background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 999px;
+  padding: 14px 44px; cursor: pointer; box-shadow: 0 4px 0 color-mix(in srgb, var(--accent) 60%, #000);
+  transition: transform .08s;
+}
+.spin:active { transform: translateY(3px); box-shadow: 0 1px 0 color-mix(in srgb, var(--accent) 60%, #000); }
+.spin:disabled { opacity: .55; cursor: default; }
+.spin:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--pickle); outline-offset: 2px; }
+
+.result {
+  width: 100%; max-width: 440px; text-align: center; min-height: 92px;
+  background: var(--surface); border: 2px dashed var(--line); border-radius: 14px; padding: 14px;
+  display: grid; place-content: center; gap: 2px;
+}
+.result .label { color: var(--muted); font-size: 14px; }
+.result .pick { font-family: var(--font-display); font-size: 36px; line-height: 1.1; }
+.result.done { border-color: var(--pickle); border-style: solid; }
+.result.done .pick { animation: pop .4s ease-out; }
+@keyframes pop { 0% { transform: scale(.7); } 70% { transform: scale(1.08); } 100% { transform: scale(1); } }
+
+.board { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 20px; display: grid; gap: 16px; }
+.board h2 { font-family: var(--font-display); font-weight: 400; font-size: 26px; margin: 0; }
+.board-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.count { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  font-family: var(--font-body); font-size: 15px; padding: 6px 14px; border-radius: 999px; cursor: pointer;
+  background: transparent; color: var(--ink); border: 1.5px solid var(--line);
+}
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.add { display: flex; gap: 8px; }
+.add input {
+  flex: 1; min-width: 0; font: inherit; padding: 10px 12px; border-radius: 10px;
+  border: 1.5px solid var(--line); background: var(--bg); color: var(--ink);
+}
+.add button, .reset {
+  font: inherit; padding: 10px 16px; border-radius: 10px; cursor: pointer;
+  border: 0; background: var(--pickle); color: #23262e; font-weight: 700;
+}
+.reset { background: transparent; color: var(--muted); border: 1px solid var(--line); font-weight: 400; font-size: 14px; padding: 6px 12px; justify-self: start; }
+ul.menu { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px 12px; }
+ul.menu li { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 0; border-bottom: 1px dotted var(--line); }
+ul.menu li .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; margin-right: 8px; }
+ul.menu li span.name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+ul.menu li button { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 6px; }
+ul.menu li button:hover { color: var(--accent); }
+.hint { color: var(--muted); font-size: 14px; margin: 0; }
+@media (prefers-reduced-motion: reduce) { .result.done .pick { animation: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>오늘 뭐 먹지<span class="q">?</span></h1>
+    <p>고민은 룰렛에게 맡기세요. 오른쪽 메뉴판에서 후보를 고르고, 먹고 싶은 메뉴를 직접 추가할 수도 있어요.</p>
+  </header>
+
+  <div class="main">
+    <section class="stage" aria-label="룰렛">
+      <div class="wheel-box">
+        <canvas id="wheel" width="880" height="880" aria-hidden="true"></canvas>
+        <div class="pointer"></div>
+      </div>
+      <button class="spin" id="spin">돌려!</button>
+      <div class="result" id="result" aria-live="polite">
+        <span class="label">버튼을 누르면 오늘의 메뉴가 정해져요</span>
+        <span class="pick">🍽️</span>
+      </div>
+    </section>
+
+    <section class="board" aria-label="메뉴판">
+      <div class="board-head">
+        <h2>메뉴판</h2>
+        <span class="count" id="count"></span>
+      </div>
+      <div class="chips" id="chips" role="group" aria-label="음식 종류"></div>
+      <form class="add" id="addForm">
+        <input id="newItem" type="text" placeholder="메뉴 추가 (예: 마라탕)" maxlength="12" aria-label="추가할 메뉴 이름">
+        <button type="submit">추가</button>
+      </form>
+      <ul class="menu" id="menu"></ul>
+      <p class="hint">× 를 누르면 이번 룰렛에서 빠져요. 추가한 메뉴는 이 브라우저에 저장돼요.</p>
+      <button class="reset" id="reset" type="button">처음 메뉴로 되돌리기</button>
+    </section>
+  </div>
+</div>
+
+<script>
+const DEFAULT = {
+  "한식": ["김치찌개", "된장찌개", "비빔밥", "제육볶음", "국밥", "냉면"],
+  "중식": ["짜장면", "짬뽕", "탕수육", "마라탕"],
+  "일식": ["초밥", "돈카츠", "라멘", "우동"],
+  "양식": ["파스타", "햄버거", "피자", "샐러드"],
+  "분식": ["떡볶이", "김밥", "라볶이"]
+};
+const KEY = "lunch-roulette-v1";
+let data = load();
+let active = "전체";
+let angle = 0;          // 현재 회전각 (라디안)
+let spinning = false;
+
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s && typeof s === "object") {
+      // 예전에 저장된 목록에 남아 있는 순대도 지움
+      if (Array.isArray(s["분식"])) s["분식"] = s["분식"].filter(v => v !== "순대");
+      return s;
+    }
+  } catch (e) {}
+  return structuredClone(DEFAULT);
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e) {} }
+
+function items() {
+  if (active === "전체") return Object.values(data).flat();
+  return data[active] || [];
+}
+
+function colors() {
+  const cs = getComputedStyle(document.documentElement);
+  return ["--s1","--s2","--s3","--s4","--s5","--s6"].map(v => cs.getPropertyValue(v).trim());
+}
+
+const canvas = document.getElementById("wheel");
+const ctx = canvas.getContext("2d");
+
+function draw() {
+  const list = items();
+  const W = canvas.width, c = W / 2, r = c - 12;
+  const pal = colors();
+  const cs = getComputedStyle(document.documentElement);
+  ctx.clearRect(0, 0, W, W);
+  if (!list.length) {
+    ctx.fillStyle = cs.getPropertyValue("--line");
+    ctx.beginPath(); ctx.arc(c, c, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = cs.getPropertyValue("--muted");
+    ctx.font = "44px 'Gowun Dodum', sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("메뉴를 추가해 주세요", c, c);
+    return;
+  }
+  const seg = Math.PI * 2 / list.length;
+  list.forEach((name, i) => {
+    // 6색을 돌려 쓰되, 마지막 칸이 첫 칸과 같은 색이 되지 않게 조정
+    let ci = i % pal.length;
+    if (i === list.length - 1 && list.length > 1 && ci === 0) ci = 1;
+    const a0 = angle + i * seg - Math.PI / 2;
+    ctx.beginPath(); ctx.moveTo(c, c); ctx.arc(c, c, r, a0, a0 + seg); ctx.closePath();
+    ctx.fillStyle = pal[ci]; ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.lineWidth = 4; ctx.stroke();
+    ctx.save();
+    ctx.translate(c, c); ctx.rotate(a0 + seg / 2);
+    ctx.fillStyle = (ci === 1) ? "#23262e" : "#ffffff";
+    const size = list.length > 16 ? 30 : list.length > 10 ? 38 : 46;
+    ctx.font = `${size}px 'Do Hyeon', sans-serif`;
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(name, r - 28, 0);
+    ctx.restore();
+  });
+  // 가운데 단추
+  ctx.beginPath(); ctx.arc(c, c, 56, 0, Math.PI * 2);
+  ctx.fillStyle = cs.getPropertyValue("--surface"); ctx.fill();
+  ctx.lineWidth = 6; ctx.strokeStyle = cs.getPropertyValue("--ink"); ctx.stroke();
+}
+
+function renderBoard() {
+  const chips = document.getElementById("chips");
+  chips.innerHTML = "";
+  ["전체", ...Object.keys(data)].forEach(cat => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "chip"; b.textContent = cat;
+    b.setAttribute("aria-pressed", cat === active);
+    b.onclick = () => { if (spinning) return; active = cat; renderAll(); };
+    chips.appendChild(b);
+  });
+  const ul = document.getElementById("menu");
+  ul.innerHTML = "";
+  const pal = colors();
+  const cats = active === "전체" ? Object.keys(data) : [active];
+  let idx = 0;
+  cats.forEach(cat => (data[cat] || []).forEach(name => {
+    const li = document.createElement("li");
+    const dot = document.createElement("span"); dot.className = "dot"; dot.style.background = pal[idx++ % pal.length];
+    const n = document.createElement("span"); n.className = "name"; n.textContent = name;
+    const x = document.createElement("button"); x.type = "button"; x.textContent = "×";
+    x.setAttribute("aria-label", name + " 빼기");
+    x.onclick = () => { if (spinning) return; data[cat] = data[cat].filter(v => v !== name); save(); renderAll(); };
+    li.append(dot, n, x); ul.appendChild(li);
+  }));
+  document.getElementById("count").textContent = `후보 ${items().length}개`;
+  document.getElementById("newItem").placeholder =
+    active === "전체" ? "메뉴 추가 (예: 마라탕)" : `${active} 메뉴 추가`;
+}
+
+function renderAll() { renderBoard(); draw(); }
+
+document.getElementById("addForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const input = document.getElementById("newItem");
+  const v = input.value.trim();
+  if (!v) return;
+  const cat = active === "전체" ? "기타" : active;
+  data[cat] = data[cat] || [];
+  if (!Object.values(data).flat().includes(v)) data[cat].push(v);
+  input.value = ""; save(); renderAll();
+});
+
+document.getElementById("reset").onclick = () => {
+  if (spinning) return;
+  data = structuredClone(DEFAULT); active = "전체"; save(); renderAll();
+};
+
+document.getElementById("spin").onclick = () => {
+  const list = items();
+  if (spinning || !list.length) return;
+  spinning = true;
+  const btn = document.getElementById("spin"); btn.disabled = true;
+  const res = document.getElementById("result");
+  res.classList.remove("done");
+  res.querySelector(".label").textContent = "두구두구두구…";
+  res.querySelector(".pick").textContent = "🤔";
+
+  const seg = Math.PI * 2 / list.length;
+  const win = Math.floor(Math.random() * list.length);
+  // 당첨 칸의 가운데가 위쪽 화살표에 오도록 최종 각도 계산
+  const jitter = (Math.random() - 0.5) * seg * 0.6;
+  const target = -(win * seg + seg / 2) + jitter;
+  const base = angle % (Math.PI * 2);
+  // 기기의 '동작 줄이기' 설정과 관계없이 항상 돌아가도록 함
+  const turns = 6;
+  let delta = ((target - base) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+  const start = base, end = base + delta + turns * Math.PI * 2;
+  const dur = 4200;
+  const t0 = performance.now();
+  const ease = t => 1 - Math.pow(1 - t, 4);
+
+  function frame(now) {
+    const t = Math.min(1, (now - t0) / dur);
+    angle = start + (end - start) * ease(t);
+    draw();
+    if (t < 1) return requestAnimationFrame(frame);
+    spinning = false; btn.disabled = false;
+    res.classList.add("done");
+    res.querySelector(".label").textContent = "오늘은 이거다!";
+    res.querySelector(".pick").textContent = list[win];
+  }
+  requestAnimationFrame(frame);
+};
+
+renderAll();
+document.fonts && document.fonts.ready.then(draw);
+</script>
