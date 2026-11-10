@@ -11,6 +11,7 @@ const CONFIG = {
   MODEL: 'gemini-3.5-flash-lite',
   MAX_FILES_PER_RUN: 8,           // 무료 사용량 제한 때문에 한 번에 조금씩 처리
   WAIT_BETWEEN_MS: 6000,          // 영수증 사이에 6초 쉬기 (분당 요청 제한 대비)
+  FIRST_COL: 2,                   // 출납장 표가 시작하는 열 (A열=1, B열=2)
 };
 
 /***** 아래는 고치지 않아도 돼요 *****/
@@ -22,7 +23,7 @@ const SUPPORTED = [
 ];
 const MAX_FILE_MB = 14;           // 요청 한도(20MB)를 넘지 않도록
 
-// 출납장 열 순서 (A열부터). 맨 뒤 3칸은 확인용으로 추가한 칸이에요.
+// 출납장 열 순서 (FIRST_COL 열부터). 맨 뒤 3칸은 확인용으로 추가한 칸이에요.
 const HEADERS = ['지출결의서 연월', '증빙번호', '사용일자', '비목', '적요(사용내역)',
                  '지출금액(원)', '수입금액(원)', '거래 후 잔액', '사용구분', '사용자', '거래처/결재처',
                  '영수증 사진', '확인', 'AI 메모'];
@@ -247,16 +248,17 @@ function writeRow_(sheet, rec) {
   values[C.CHECK - 1] = false;
   values[C.MEMO - 1] = rec.memo;
 
-  sheet.getRange(r, C.PROOF).setNumberFormat('@');            // 증빙번호는 글자 그대로
-  sheet.getRange(r, 1, 1, HEADERS.length).setValues([values]);
-  sheet.getRange(r, C.MONTH).setNumberFormat('yyyy.mm');
-  sheet.getRange(r, C.DATE).setNumberFormat('mm/dd');
-  sheet.getRange(r, C.OUT, 1, 3).setNumberFormat('#,##0');
+  sheet.getRange(r, col_(C.PROOF)).setNumberFormat('@');      // 증빙번호는 글자 그대로
+  sheet.getRange(r, col_(1), 1, HEADERS.length).setValues([values]);
+  sheet.getRange(r, col_(C.MONTH)).setNumberFormat('yyyy.mm');
+  sheet.getRange(r, col_(C.DATE)).setNumberFormat('mm/dd');
+  sheet.getRange(r, col_(C.OUT), 1, 3).setNumberFormat('#,##0');
   // 거래 후 잔액 = 윗줄 잔액 + 수입 - 지출
-  sheet.getRange(r, C.BALANCE).setFormulaR1C1('=N(R[-1]C)+N(RC[-1])-N(RC[-2])');
-  sheet.getRange(r, C.CHECK).insertCheckboxes();
+  sheet.getRange(r, col_(C.BALANCE)).setFormulaR1C1('=N(R[-1]C)+N(RC[-1])-N(RC[-2])');
+  sheet.getRange(r, col_(C.CHECK)).insertCheckboxes();
+  sheet.getRange(r, col_(1), 1, MAIN_COLS).setBorder(true, true, true, true, true, false);   // 표 테두리
   if (rec.warn) {
-    sheet.getRange(r, 1, 1, HEADERS.length).setBackground('#fff4d6');   // 확인 필요한 줄은 노란색
+    sheet.getRange(r, col_(1), 1, HEADERS.length).setBackground('#fff4d6');   // 확인 필요한 줄은 노란색
   }
 }
 
@@ -265,12 +267,18 @@ function getSheet_() {
   let sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
   if (!sheet) {
     sheet = ss.insertSheet(CONFIG.SHEET_NAME);
-    sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS])
+    sheet.getRange(1, col_(1), 1, HEADERS.length).setValues([HEADERS])
       .setFontWeight('bold').setHorizontalAlignment('center')
       .setBorder(true, true, true, true, true, true);
-    sheet.getRange(1, 1, 1, MAIN_COLS).setBackground('#d9d9d9');
-    sheet.getRange(1, MAIN_COLS + 1, 1, HEADERS.length - MAIN_COLS).setBackground('#f2c230');
+    sheet.getRange(1, col_(1), 1, MAIN_COLS).setBackground('#d9d9d9');
     sheet.setFrozenRows(1);
+  }
+  // 이미 있던 출납장이면 오른쪽 확인용 3칸 제목만 채워요
+  const extra = sheet.getRange(1, col_(MAIN_COLS + 1), 1, HEADERS.length - MAIN_COLS);
+  if (extra.getValues()[0].join('') === '') {
+    extra.setValues([HEADERS.slice(MAIN_COLS)])
+      .setFontWeight('bold').setHorizontalAlignment('center').setBackground('#f2c230')
+      .setBorder(true, true, true, true, true, true);
   }
   return sheet;
 }
@@ -285,6 +293,11 @@ function retryable_(msg) {
 function getOrCreateSub_(folder, name) {
   const it = folder.getFoldersByName(name);
   return it.hasNext() ? it.next() : folder.createFolder(name);
+}
+
+/** 표 안의 몇 번째 칸(1부터)을 시트의 실제 열 번호로 바꾸기 */
+function col_(c) {
+  return c + CONFIG.FIRST_COL - 1;
 }
 
 function pad2_(n) {
@@ -305,7 +318,7 @@ function parseTime_(s) {
 function isDuplicate_(sheet, rec) {
   const last = sheet.getLastRow();
   if (last < 2 || !rec.amount || rec.proof.indexOf('????') === 0) return false;
-  const values = sheet.getRange(2, C.PROOF, last - 1, C.OUT - C.PROOF + 1).getValues();
+  const values = sheet.getRange(2, col_(C.PROOF), last - 1, C.OUT - C.PROOF + 1).getValues();
   return values.some(v => String(v[0]) === rec.proof && Number(v[C.OUT - C.PROOF]) === rec.amount);
 }
 

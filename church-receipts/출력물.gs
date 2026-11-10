@@ -62,7 +62,7 @@ function makeReceiptDoc() {
 /** 실제로 문서를 만드는 부분: 출납장 start~end행을 행 순서대로 배치 */
 function buildReceiptDoc_(start, end) {
   const sheet = getSheet_();
-  const all = sheet.getRange(start, 1, end - start + 1, C.PHOTO).getValues();
+  const all = sheet.getRange(start, col_(1), end - start + 1, C.PHOTO).getValues();
   const rows = all
     .filter(r => r[C.PHOTO - 1])
     .map(r => ({ proof: String(r[C.PROOF - 1] || ''), url: String(r[C.PHOTO - 1]) }));
