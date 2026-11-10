@@ -93,10 +93,12 @@ function onOpen() {
 function setup() {
   getSheet_();
   ScriptApp.getProjectTriggers()
-    .filter(t => t.getHandlerFunction() === 'processReceipts')
+    .filter(t => ['processReceipts', 'onBudgetEdit'].indexOf(t.getHandlerFunction()) !== -1)
     .forEach(t => ScriptApp.deleteTrigger(t));
   ScriptApp.newTrigger('processReceipts').timeBased().everyMinutes(10).create();
-  Logger.log('설정 완료! 이제 10분마다 새 영수증을 확인해요.');
+  // 예산표에서 항목 이름을 고치면 폴더 이름도 따라 바뀌게
+  ScriptApp.newTrigger('onBudgetEdit').forSpreadsheet(SpreadsheetApp.getActive()).onEdit().create();
+  Logger.log('설정 완료! 이제 10분마다 새 영수증을 확인하고, 예산표 항목 이름이 바뀌면 폴더도 따라 바꿔요.');
 }
 
 /** 폴더에서 새 영수증을 찾아 처리 */
@@ -440,10 +442,87 @@ function noBudgetWarning_(hit, date) {
 
 /** 폴더 이름을 예산표 적요와 맞춰 보기. 띄어쓰기와 괄호 속 날짜는 무시 (예: '여름성경학교' = '여름성경학교(7/24금~25토)') */
 function matchBudgetItem_(name) {
-  const norm = t => String(t).replace(/\(.*?\)/g, '').replace(/\s+/g, '');
-  const key = norm(name);
+  const key = normItem_(name);
   if (!key) return null;
-  return getBudgetItems_().filter(b => b.item === name || norm(b.item) === key)[0] || null;
+  return getBudgetItems_().filter(b => b.item === name || normItem_(b.item) === key)[0] || null;
+}
+
+/** 이름 비교용: 괄호 속 글자와 띄어쓰기 빼기 */
+function normItem_(t) {
+  return String(t).replace(/\(.*?\)/g, '').replace(/\s+/g, '');
+}
+
+/** 예산표가 고쳐질 때 자동 실행 (setup에서 등록).
+ *  적요 칸 하나를 고치면: 선생님들의 항목 폴더 이름과 출납장의 적요를 새 이름으로 바꿔요.
+ *  빈 칸에 새 항목을 쓰면: 모든 선생님 폴더에 새 항목 폴더를 만들어요. */
+function onBudgetEdit(e) {
+  if (!e || !e.range) return;
+  const range = e.range;
+  if (range.getSheet().getName() !== setting_('BUDGET_SHEET')) return;
+  if (range.getColumn() !== CONFIG.BUDGET_ITEM_COL || range.getNumRows() !== 1 || range.getNumColumns() !== 1) return;
+
+  const oldName = String(e.oldValue === undefined ? '' : e.oldValue).trim();
+  const newName = String(e.value === undefined ? '' : e.value).trim();
+  if (!newName || normItem_(oldName) === normItem_(newName)) return;   // 지운 경우, 괄호 속만 바뀐 경우는 그대로
+  const item = getBudgetItems_().filter(b => b.item === newName)[0];
+  if (!item) return;                                                     // 예산표 항목 칸이 아닌 곳
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    ss.toast('다른 작업 중이라 폴더 이름을 못 바꿨어요. 메뉴의 "선생님 폴더에 항목 폴더 만들기"를 눌러 주세요.', '🧾 영수증', 10);
+    return;
+  }
+  try {
+    let renamed = 0, created = 0, rows = 0;
+    const people = getRootFolder_().getFolders();
+    while (people.hasNext()) {
+      const teacher = people.next();
+      if (SKIP_FOLDERS.indexOf(teacher.getName()) !== -1) continue;
+      let found = false;
+      if (oldName) {
+        const subs = teacher.getFolders();
+        while (subs.hasNext()) {
+          const sub = subs.next();
+          if (normItem_(sub.getName()) !== normItem_(oldName)) continue;
+          // 선생님이 붙인 '(12월만 가능)' 같은 안내 문구는 살려요
+          const name = sub.getName().trim();
+          const tail = (/\([^()]*\)\s*$/.exec(name) || [''])[0];
+          const keepNote = name !== shortItemName_(oldName) && name !== oldName ? tail : '';
+          sub.setName(shortItemName_(newName) + keepNote);
+          renamed++;
+          found = true;
+        }
+      }
+      if (!found && !matchFolderIn_(teacher, newName)) { teacher.createFolder(shortItemName_(newName)); created++; }
+    }
+    // 출납장에 이미 적힌 옛 적요도 새 이름으로
+    if (oldName) {
+      const sheet = getSheet_();
+      const last = sheet.getLastRow();
+      if (last >= 2) {
+        const col = sheet.getRange(2, col_(C.JEOKYO), last - 1, 1);
+        const vals = col.getValues();
+        vals.forEach(v => { if (String(v[0]).trim() === oldName) { v[0] = newName; rows++; } });
+        if (rows) col.setValues(vals);
+      }
+    }
+    const msg = (renamed ? '폴더 ' + renamed + '개 이름 변경' : '') +
+                (created ? (renamed ? ', ' : '') + '새 폴더 ' + created + '개' : '') +
+                (rows ? ', 출납장 적요 ' + rows + '줄 변경' : '');
+    if (msg) ss.toast(msg + ' (' + (oldName || '새 항목') + ' → ' + newName + ')', '🧾 영수증', 8);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 선생님 폴더 안에 이 항목 폴더가 이미 있는지 */
+function matchFolderIn_(teacher, itemName) {
+  const subs = teacher.getFolders();
+  while (subs.hasNext()) {
+    if (normItem_(subs.next().getName()) === normItem_(itemName)) return true;
+  }
+  return false;
 }
 
 /** 폴더 이름으로 쓸 짧은 이름 (괄호 속 날짜 빼기) */
