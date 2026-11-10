@@ -12,6 +12,21 @@ const CONFIG = {
   MAX_FILES_PER_RUN: 8,           // 무료 사용량 제한 때문에 한 번에 조금씩 처리
   WAIT_BETWEEN_MS: 6000,          // 영수증 사이에 6초 쉬기 (분당 요청 제한 대비)
   FIRST_COL: 2,                   // 출납장 표가 시작하는 열 (A열=1, B열=2)
+
+  // 적요·비목 자동 분류: 예산표 탭에서 항목 목록을 읽어와요
+  BUDGET_SHEET: '2026 최종(고고고 변경내역)',   // 예산표 탭 이름 (정확히 똑같이)
+  BUDGET_GROUP_COL: 2,            // 예산표에서 비목(기본운영비, 행사 …)이 있는 열 (B열=2)
+  BUDGET_ITEM_COL: 3,             // 예산표에서 적요(오후간식, 생일 …)가 있는 열 (C열=3)
+
+  // 적요를 고를 때 AI가 참고할 우리 부서 규칙. 말로 자유롭게 고치거나 더 적어도 돼요.
+  CATEGORY_HINTS: [
+    '빵집·제과점에서 산 빵은 오전간식(빵)',
+    '과자·음료·우유 같은 간식은 오후간식',
+    '생일 케이크·생일 선물은 생일',
+    '교사 모임 식사나 교사용 물품은 교사 활동비',
+    '어린이날 무렵(4월 말~5월 초) 선물은 어린이날, 12월 선물은 성탄절',
+    '행사 이름 옆 날짜 앞뒤 3주 안의 구매는 그 행사 물품인지 먼저 생각하기',
+  ],
 };
 
 /***** 아래는 고치지 않아도 돼요 *****/
@@ -27,8 +42,10 @@ const MAX_FILE_MB = 14;           // 요청 한도(20MB)를 넘지 않도록
 const HEADERS = ['지출결의서 연월', '증빙번호', '사용일자', '비목', '적요(사용내역)',
                  '지출금액(원)', '수입금액(원)', '거래 후 잔액', '사용구분', '사용자', '거래처/결재처',
                  '영수증 사진', '확인', 'AI 메모'];
-const C = { MONTH: 1, PROOF: 2, DATE: 3, OUT: 6, IN: 7, BALANCE: 8, USER: 10,
-            PHOTO: 12, CHECK: 13, MEMO: 14 };
+const C = { MONTH: 1, PROOF: 2, DATE: 3, BIMOK: 4, JEOKYO: 5, OUT: 6, IN: 7, BALANCE: 8, USER: 10,
+            VENDOR: 11, PHOTO: 12, CHECK: 13, MEMO: 14 };
+const UNKNOWN_ITEM = '모름';
+let budgetCache = null;           // 예산표 항목 목록 (한 번 실행에 한 번만 읽음)
 const MAIN_COLS = 11;             // 원래 출납장 칸 수 (A~K)
 let stopRun = false;              // 사용량 한도 등에 걸리면 이번 실행은 여기서 멈춤
 
@@ -100,7 +117,7 @@ function processFolder_(sheet, folder, person, limit) {
 function handleFile_(sheet, file, person) {
   const mime = file.getMimeType();
   const rec = { month: '', proof: '', date: '', amount: '', person: person,
-                link: file.getUrl(), memo: '', warn: true };
+                bimok: '', jeokyo: '', vendor: '', link: file.getUrl(), memo: '', warn: true };
 
   if (SUPPORTED.indexOf(mime) === -1) {
     rec.memo = '⚠️ 읽을 수 없는 파일 형식(' + mime + '). 사진(JPG, PNG)이나 PDF로 올려주세요.';
@@ -114,9 +131,10 @@ function handleFile_(sheet, file, person) {
     return true;
   }
 
+  const budget = getBudgetItems_();
   let r;
   try {
-    r = readReceipt_(blob, mime);
+    r = readReceipt_(blob, mime, budget);
   } catch (e) {
     if (e.retryable) { Logger.log('다음에 다시 시도: ' + e.message); return false; }
     rec.memo = '⚠️ 자동 읽기 실패: ' + e.message;
@@ -132,25 +150,36 @@ function handleFile_(sheet, file, person) {
   rec.month = d ? new Date(d.getFullYear(), d.getMonth(), 1) : '';
   rec.proof = (d ? pad2_(d.getMonth() + 1) + pad2_(d.getDate()) : '????') + ' ' + (hhmm || '????');
   rec.amount = Number(r.total) || '';
+  rec.vendor = r.store || '';
+
+  // 적요 → 비목 (예산표에서 짝 찾기)
+  const hit = budget.filter(b => b.item === r.category)[0];
+  if (hit) {
+    rec.jeokyo = hit.item;
+    rec.bimok = hit.group;
+  }
 
   const warnings = [];
   if (r.confidence !== '높음') warnings.push('읽기 신뢰도 ' + (r.confidence || '?') + ': 꼭 확인해 주세요');
   if (!d) warnings.push('날짜를 못 읽었어요');
   if (!hhmm) warnings.push('결제 시각을 못 읽었어요(증빙번호 확인)');
   if (!rec.amount) warnings.push('금액을 못 읽었어요');
+  if (!budget.length) warnings.push('예산표 탭(' + CONFIG.BUDGET_SHEET + ')을 못 찾아 적요를 비워 뒀어요');
+  else if (!hit) warnings.push('적요를 정하지 못했어요');
+  else if (r.category_sure !== true) warnings.push('적요 확인 필요(AI 추측: ' + (r.category_reason || '') + ')');
   if (r.note) warnings.push(r.note);
   if (isDuplicate_(sheet, rec)) warnings.push('⚠️ 중복 의심: 같은 증빙번호·금액이 이미 있어요');
 
   rec.warn = warnings.length > 0;
-  const ref = '참고: ' + (r.store || '구매처 모름') + (r.items ? ' / ' + r.items : '');
-  rec.memo = warnings.concat([ref]).join(' / ');
+  const ref = r.items ? '품목: ' + r.items : '';
+  rec.memo = warnings.concat(ref ? [ref] : []).join(' / ');
 
   writeRow_(sheet, rec);
   return true;
 }
 
 /** Gemini에게 영수증을 보내서 정해진 형식(JSON)으로 받아오기 */
-function readReceipt_(blob, mime) {
+function readReceipt_(blob, mime, budget) {
   const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
   if (!key) throw new Error('API 키가 없어요. 프로젝트 설정 → 스크립트 속성에 GEMINI_API_KEY를 넣어주세요.');
 
@@ -168,6 +197,17 @@ function readReceipt_(blob, mime) {
     required: ['date', 'time', 'store', 'total', 'items', 'confidence', 'note'],
     propertyOrdering: ['date', 'time', 'store', 'total', 'items', 'confidence', 'note'],
   };
+  if (budget.length) {
+    schema.properties.category = { type: 'STRING', format: 'enum',
+      enum: budget.map(b => b.item).concat([UNKNOWN_ITEM]),
+      description: '이 지출이 해당하는 예산 적요. 판단이 어려우면 모름' };
+    schema.properties.category_sure = { type: 'BOOLEAN', description: '적요를 확신하면 true' };
+    schema.properties.category_reason = { type: 'STRING', description: '그 적요를 고른 이유를 한 줄로' };
+    ['category', 'category_sure', 'category_reason'].forEach(k => {
+      schema.required.push(k);
+      schema.propertyOrdering.push(k);
+    });
+  }
 
   const prompt =
     '교회 초등부에서 쓴 비용의 영수증입니다. 영수증에서 결제 날짜, 결제 시각, 가게 이름, ' +
@@ -176,7 +216,8 @@ function readReceipt_(blob, mime) {
     '- 금액은 부가세를 포함한 최종 결제 금액(받을 금액, 합계, 결제 금액)을 쓰세요. 거스름돈이나 받은 돈이 아니에요.\n' +
     '- 글자가 흐리거나 잘려서 확실하지 않으면 confidence를 낮추고 note에 어떤 부분이 불확실한지 쓰세요.\n' +
     '- 영수증이 아닌 사진이면 confidence를 낮음으로 하고 note에 그렇게 쓰세요.\n' +
-    '- 지어내지 마세요. 안 보이는 값은 빈 문자열이나 0으로 두세요.';
+    '- 지어내지 마세요. 안 보이는 값은 빈 문자열이나 0으로 두세요.' +
+    (budget.length ? categoryPrompt_(budget) : '');
 
   const body = {
     contents: [{
@@ -244,6 +285,9 @@ function writeRow_(sheet, rec) {
   values[C.DATE - 1] = rec.date;
   values[C.OUT - 1] = rec.amount;
   values[C.USER - 1] = rec.person;
+  values[C.BIMOK - 1] = rec.bimok;
+  values[C.JEOKYO - 1] = rec.jeokyo;
+  values[C.VENDOR - 1] = rec.vendor;
   values[C.PHOTO - 1] = rec.link;
   values[C.CHECK - 1] = false;
   values[C.MEMO - 1] = rec.memo;
@@ -293,6 +337,42 @@ function retryable_(msg) {
 function getOrCreateSub_(folder, name) {
   const it = folder.getFoldersByName(name);
   return it.hasNext() ? it.next() : folder.createFolder(name);
+}
+
+/** 예산표 탭에서 [비목, 적요] 목록 읽기. '월별구분' 줄 아래부터 '월계' 줄 전까지 */
+function getBudgetItems_() {
+  if (budgetCache) return budgetCache;
+  budgetCache = [];
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.BUDGET_SHEET);
+  if (!sh) {
+    Logger.log('예산표 탭을 찾을 수 없어요: ' + CONFIG.BUDGET_SHEET);
+    return budgetCache;
+  }
+  const g = CONFIG.BUDGET_GROUP_COL, it = CONFIG.BUDGET_ITEM_COL;
+  const left = Math.min(g, it);
+  const rows = sh.getRange(1, left, sh.getLastRow(), Math.abs(g - it) + 1).getValues();
+  let started = false;
+  let group = '';
+  for (const row of rows) {
+    const gv = String(row[g - left]).trim();
+    const iv = String(row[it - left]).trim();
+    if (!started) { if (gv === '월별구분') started = true; continue; }
+    if (gv === '월계') break;
+    if (gv) group = gv;                         // 합쳐진 칸은 첫 줄에만 값이 있어서 이어서 씀
+    if (iv) budgetCache.push({ group: group, item: iv });
+  }
+  if (!budgetCache.length) Logger.log('예산표에서 항목을 못 읽었어요. 월별구분/월계 줄과 열 번호를 확인해 주세요.');
+  return budgetCache;
+}
+
+/** 적요 고르기 안내문 */
+function categoryPrompt_(budget) {
+  return '\n\n이 지출이 아래 예산 항목 중 어디에 해당하는지 category에 골라 주세요. ' +
+    '결제 날짜와 산 물건을 함께 보고 판단하세요.\n' +
+    budget.map(b => '- ' + b.item + ' (' + b.group + ')').join('\n') +
+    '\n판단 규칙:\n' + CONFIG.CATEGORY_HINTS.map(h => '- ' + h).join('\n') +
+    '\n- 여러 항목이 가능하거나 근거가 약하면 가장 가까운 것을 고르되 category_sure를 false로 하세요.' +
+    '\n- 전혀 모르겠으면 ' + UNKNOWN_ITEM + '를 고르세요.';
 }
 
 /** 표 안의 몇 번째 칸(1부터)을 시트의 실제 열 번호로 바꾸기 */
