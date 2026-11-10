@@ -120,7 +120,7 @@ function buildReceiptDoc_(start, end) {
   doc.saveAndClose();
 
   // 문서와 PDF를 '출력물' 폴더에 저장
-  const root = DriveApp.getFolderById(CONFIG.ROOT_FOLDER_ID);
+  const root = getRootFolder_();
   const out = getOrCreateSub_(root, PRINT.OUTPUT_FOLDER_NAME);
   const docFile = DriveApp.getFileById(doc.getId());
   docFile.moveTo(out);

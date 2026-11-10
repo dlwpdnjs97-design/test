@@ -4,21 +4,22 @@
  * '출납장' 시트에 한 줄씩 채워 넣어요.
  ******************************************************/
 
-/***** ① 설정: 여기만 바꾸면 돼요 *****/
-const CONFIG = {
-  ROOT_FOLDER_ID: '여기에_폴더_ID를_붙여넣으세요',
-  SHEET_NAME: '출납장',
+/***** ① 설정 *****
+ * 시트마다 다른 값은 코드가 아니라 ⚙️ 프로젝트 설정 → '스크립트 속성'에 넣어요.
+ * 그래서 GitHub의 새 코드를 통째로 붙여넣어도 설정이 지워지지 않아요.
+ *
+ *   GEMINI_API_KEY  (필수) AI Studio에서 받은 키
+ *   ROOT_FOLDER_ID  (필수) '영수증 올리는 곳' 폴더 ID
+ *   BUDGET_SHEET    (선택) 예산표 탭 이름. 없으면 아래 기본값
+ *   MODEL           (선택) Gemini 모델 이름. 없으면 아래 기본값
+ *   CATEGORY_HINTS  (선택) 적요 판단 규칙. 여러 개는 ; 로 구분
+ *                   예: 빵은 오전간식(빵); 과자·음료는 오후간식; 생일 케이크는 생일
+ *
+ * 스크립트 속성에 값을 안 넣으면 아래 기본값을 써요.
+ */
+const DEFAULTS = {
+  BUDGET_SHEET: '2026 최종(고고고 변경내역)',
   MODEL: 'gemini-3.5-flash-lite',
-  MAX_FILES_PER_RUN: 8,           // 무료 사용량 제한 때문에 한 번에 조금씩 처리
-  WAIT_BETWEEN_MS: 6000,          // 영수증 사이에 6초 쉬기 (분당 요청 제한 대비)
-  FIRST_COL: 2,                   // 출납장 표가 시작하는 열 (A열=1, B열=2)
-
-  // 적요·비목 자동 분류: 예산표 탭에서 항목 목록을 읽어와요
-  BUDGET_SHEET: '2026 최종(고고고 변경내역)',   // 예산표 탭 이름 (정확히 똑같이)
-  BUDGET_GROUP_COL: 2,            // 예산표에서 비목(기본운영비, 행사 …)이 있는 열 (B열=2)
-  BUDGET_ITEM_COL: 3,             // 예산표에서 적요(오후간식, 생일 …)가 있는 열 (C열=3)
-
-  // 적요를 고를 때 AI가 참고할 우리 부서 규칙. 말로 자유롭게 고치거나 더 적어도 돼요.
   CATEGORY_HINTS: [
     '빵집·제과점에서 산 빵은 오전간식(빵)',
     '과자·음료·우유 같은 간식은 오후간식',
@@ -26,8 +27,36 @@ const CONFIG = {
     '교사 모임 식사나 교사용 물품은 교사 활동비',
     '어린이날 무렵(4월 말~5월 초) 선물은 어린이날, 12월 선물은 성탄절',
     '행사 이름 옆 날짜 앞뒤 3주 안의 구매는 그 행사 물품인지 먼저 생각하기',
-  ],
+  ].join('; '),
 };
+
+// 시트 모양에 관한 설정 (보통은 고칠 필요 없어요)
+const CONFIG = {
+  SHEET_NAME: '출납장',
+  MAX_FILES_PER_RUN: 8,           // 무료 사용량 제한 때문에 한 번에 조금씩 처리
+  WAIT_BETWEEN_MS: 6000,          // 영수증 사이에 6초 쉬기 (분당 요청 제한 대비)
+  FIRST_COL: 2,                   // 출납장 표가 시작하는 열 (A열=1, B열=2)
+  BUDGET_GROUP_COL: 2,            // 예산표에서 비목(기본운영비, 행사 …)이 있는 열 (B열=2)
+  BUDGET_ITEM_COL: 3,             // 예산표에서 적요(오후간식, 생일 …)가 있는 열 (C열=3)
+};
+
+/** 스크립트 속성 값 읽기 (없으면 기본값) */
+function setting_(key) {
+  const v = PropertiesService.getScriptProperties().getProperty(key);
+  return v !== null && String(v).trim() !== '' ? String(v).trim() : (DEFAULTS[key] || '');
+}
+
+/** '영수증 올리는 곳' 폴더 */
+function getRootFolder_() {
+  const id = setting_('ROOT_FOLDER_ID');
+  if (!id) throw new Error('스크립트 속성에 ROOT_FOLDER_ID(영수증 올리는 곳 폴더 ID)를 넣어 주세요.');
+  return DriveApp.getFolderById(id);
+}
+
+/** 적요 판단 규칙 목록 */
+function hints_() {
+  return setting_('CATEGORY_HINTS').split(';').map(h => h.trim()).filter(h => h);
+}
 
 /***** 아래는 고치지 않아도 돼요 *****/
 const DONE_FOLDER_NAME = '처리완료';
@@ -79,7 +108,7 @@ function processReceipts() {
   }
   try {
     const sheet = getSheet_();
-    const root = DriveApp.getFolderById(CONFIG.ROOT_FOLDER_ID);
+    const root = getRootFolder_();
     let count = 0;
 
     // 선생님별 폴더 (폴더 이름 = 사용자)
@@ -186,7 +215,7 @@ function handleFile_(sheet, file, person, fixed) {
   if (!rec.amount) warnings.push('금액을 못 읽었어요');
   if (fixed && fixed.unmatched) warnings.push('폴더 이름(' + fixed.unmatched + ')이 예산표 항목과 안 맞아서 AI가 적요를 추측했어요');
   if (!folderItem) {
-    if (!budget.length) warnings.push('예산표 탭(' + CONFIG.BUDGET_SHEET + ')을 못 찾아 적요를 비워 뒀어요');
+    if (!budget.length) warnings.push('예산표 탭(' + setting_('BUDGET_SHEET') + ')을 못 찾아 적요를 비워 뒀어요');
     else if (!hit) warnings.push('적요를 정하지 못했어요');
     else if (r.category_sure !== true) warnings.push('적요 확인 필요(AI 추측: ' + (r.category_reason || '') + ')');
   }
@@ -259,7 +288,7 @@ function readReceipt_(blob, mime, budget) {
   };
 
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-              encodeURIComponent(CONFIG.MODEL) + ':generateContent';
+              encodeURIComponent(setting_('MODEL')) + ':generateContent';
   let res;
   try {
     res = UrlFetchApp.fetch(url, {
@@ -280,7 +309,7 @@ function readReceipt_(blob, mime, budget) {
 
   if (code === 429) throw retryable_('무료 사용량 한도에 걸렸어요. 잠시 후 자동으로 다시 시도해요.');
   if (code >= 500) throw retryable_('AI 서버가 바빠요(' + code + ')');
-  if (code === 404) throw retryable_('모델(' + CONFIG.MODEL + ')을 쓸 수 없어요. 코드 맨 위 MODEL을 바꿔 주세요. 구글 메시지: ' + apiMsg);
+  if (code === 404) throw retryable_('모델(' + setting_('MODEL') + ')을 쓸 수 없어요. 스크립트 속성 MODEL에 listModels로 찾은 이름을 넣어 주세요. 구글 메시지: ' + apiMsg);
   if (code !== 200) throw new Error('API 오류 ' + code + ': ' + apiMsg);
 
   if (json.promptFeedback && json.promptFeedback.blockReason) {
@@ -367,9 +396,9 @@ function getOrCreateSub_(folder, name) {
 function getBudgetItems_() {
   if (budgetCache) return budgetCache;
   budgetCache = [];
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.BUDGET_SHEET);
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(setting_('BUDGET_SHEET'));
   if (!sh) {
-    Logger.log('예산표 탭을 찾을 수 없어요: ' + CONFIG.BUDGET_SHEET);
+    Logger.log('예산표 탭을 찾을 수 없어요: ' + setting_('BUDGET_SHEET'));
     return budgetCache;
   }
   const g = CONFIG.BUDGET_GROUP_COL - 1, it = CONFIG.BUDGET_ITEM_COL - 1;   // 0부터 세는 칸 번호
@@ -427,10 +456,10 @@ function makeCategoryFolders() {
   const budget = getBudgetItems_();
   const ui = SpreadsheetApp.getUi();
   if (!budget.length) {
-    ui.alert('예산표 탭(' + CONFIG.BUDGET_SHEET + ')에서 항목을 못 읽었어요. 코드의 BUDGET_SHEET 이름을 확인해 주세요.');
+    ui.alert('예산표 탭(' + setting_('BUDGET_SHEET') + ')에서 항목을 못 읽었어요. 스크립트 속성 BUDGET_SHEET에 예산표 탭 이름을 정확히 넣어 주세요.');
     return;
   }
-  const root = DriveApp.getFolderById(CONFIG.ROOT_FOLDER_ID);
+  const root = getRootFolder_();
   const people = root.getFolders();
   const made = [];
   while (people.hasNext()) {
@@ -456,7 +485,7 @@ function categoryPrompt_(budget) {
   return '\n\n이 지출이 아래 예산 항목 중 어디에 해당하는지 category에 골라 주세요. ' +
     '결제 날짜와 산 물건을 함께 보고 판단하세요.\n' +
     budget.map(b => '- ' + b.item + ' (' + b.group + ')').join('\n') +
-    '\n판단 규칙:\n' + CONFIG.CATEGORY_HINTS.map(h => '- ' + h).join('\n') +
+    '\n판단 규칙:\n' + hints_().map(h => '- ' + h).join('\n') +
     '\n- 여러 항목이 가능하거나 근거가 약하면 가장 가까운 것을 고르되 category_sure를 false로 하세요.' +
     '\n- 전혀 모르겠으면 ' + UNKNOWN_ITEM + '를 고르세요.';
 }
@@ -491,7 +520,10 @@ function isDuplicate_(sheet, rec) {
 /***** 문제 찾기용 함수들 *****/
 /** 폴더 안에 무엇이 보이는지 실행 로그에 보여줘요 */
 function checkSetup() {
-  const root = DriveApp.getFolderById(CONFIG.ROOT_FOLDER_ID);
+  ['ROOT_FOLDER_ID', 'BUDGET_SHEET', 'MODEL'].forEach(k => Logger.log('설정 ' + k + ': ' + (setting_(k) || '(비어 있음)')));
+  Logger.log('설정 CATEGORY_HINTS: ' + hints_().length + '개');
+  Logger.log('예산표 항목: ' + getBudgetItems_().length + '개');
+  const root = getRootFolder_();
   Logger.log('바깥 폴더 이름: ' + root.getName());
   const folders = root.getFolders();
   while (folders.hasNext()) {
