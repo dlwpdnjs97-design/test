@@ -31,6 +31,7 @@ const CONFIG = {
 
 /***** 아래는 고치지 않아도 돼요 *****/
 const DONE_FOLDER_NAME = '처리완료';
+const SKIP_FOLDERS = [DONE_FOLDER_NAME, '출력물'];   // 영수증 폴더로 보지 않는 폴더
 const UNASSIGNED = '미지정';
 const SUPPORTED = [
   'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif',   // 아이폰 HEIC도 OK
@@ -54,6 +55,8 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('🧾 영수증')
     .addItem('지금 영수증 처리하기', 'processReceipts')
     .addItem('영수증 출력물 만들기', 'makeReceiptDoc')
+    .addSeparator()
+    .addItem('선생님 폴더에 항목 폴더 만들기', 'makeCategoryFolders')
     .addToUi();
 }
 
@@ -83,8 +86,8 @@ function processReceipts() {
     const people = root.getFolders();
     while (people.hasNext() && count < CONFIG.MAX_FILES_PER_RUN && !stopRun) {
       const folder = people.next();
-      if (folder.getName() === DONE_FOLDER_NAME || folder.getName() === '출력물') continue;   // 처리완료·출력물 폴더는 건너뜀
-      count += processFolder_(sheet, folder, folder.getName(), CONFIG.MAX_FILES_PER_RUN - count);
+      if (SKIP_FOLDERS.indexOf(folder.getName()) !== -1) continue;   // 처리완료·출력물 폴더는 건너뜀
+      count += processTeacher_(sheet, folder, CONFIG.MAX_FILES_PER_RUN - count);
     }
     // 최상위 폴더에 바로 올린 사진
     if (count < CONFIG.MAX_FILES_PER_RUN && !stopRun) {
@@ -96,13 +99,28 @@ function processReceipts() {
   }
 }
 
-function processFolder_(sheet, folder, person, limit) {
+/** 선생님 폴더 하나 처리: 폴더에 바로 넣은 사진 + 항목 폴더(심방, 생일 …)에 넣은 사진 */
+function processTeacher_(sheet, teacherFolder, limit) {
+  const person = teacherFolder.getName();
+  let n = processFolder_(sheet, teacherFolder, person, limit, null);   // 항목 폴더 밖 → AI가 적요 추측
+  const subs = teacherFolder.getFolders();
+  while (subs.hasNext() && n < limit && !stopRun) {
+    const sub = subs.next();
+    if (SKIP_FOLDERS.indexOf(sub.getName()) !== -1) continue;
+    const item = matchBudgetItem_(sub.getName());
+    n += processFolder_(sheet, sub, person, limit - n, item || { unmatched: sub.getName() });
+  }
+  return n;
+}
+
+/** fixed: 항목 폴더에서 온 사진이면 {group, item}, 이름이 안 맞는 폴더면 {unmatched}, 아니면 null */
+function processFolder_(sheet, folder, person, limit, fixed) {
   const files = folder.getFiles();
   let done = null;
   let n = 0;
   while (files.hasNext() && n < limit) {
     const file = files.next();
-    if (!handleFile_(sheet, file, person)) {           // 일시적 오류: 다음 실행 때 다시 시도
+    if (!handleFile_(sheet, file, person, fixed)) {    // 일시적 오류: 다음 실행 때 다시 시도
       stopRun = true;
       break;
     }
@@ -114,7 +132,7 @@ function processFolder_(sheet, folder, person, limit) {
 }
 
 /** 파일 하나 처리. 시트에 기록했으면 true, 다음에 다시 시도할 거면 false */
-function handleFile_(sheet, file, person) {
+function handleFile_(sheet, file, person, fixed) {
   const mime = file.getMimeType();
   const rec = { month: '', proof: '', date: '', amount: '', person: person,
                 bimok: '', jeokyo: '', vendor: '', link: file.getUrl(), memo: '', warn: true };
@@ -132,9 +150,11 @@ function handleFile_(sheet, file, person) {
   }
 
   const budget = getBudgetItems_();
+  const folderItem = fixed && fixed.item ? fixed : null;
   let r;
   try {
-    r = readReceipt_(blob, mime, budget);
+    // 항목 폴더에서 온 사진은 적요가 이미 정해져 있으니 AI에게 묻지 않아요
+    r = readReceipt_(blob, mime, folderItem ? [] : budget);
   } catch (e) {
     if (e.retryable) { Logger.log('다음에 다시 시도: ' + e.message); return false; }
     rec.memo = '⚠️ 자동 읽기 실패: ' + e.message;
@@ -150,10 +170,10 @@ function handleFile_(sheet, file, person) {
   rec.month = d ? new Date(d.getFullYear(), d.getMonth(), 1) : '';
   rec.proof = (d ? pad2_(d.getMonth() + 1) + pad2_(d.getDate()) : '????') + ' ' + (hhmm || '????');
   rec.amount = Number(r.total) || '';
-  rec.vendor = r.store || '';
+  rec.vendor = (r.store || '') + (r.items ? ' / ' + r.items : '');
 
-  // 적요 → 비목 (예산표에서 짝 찾기)
-  const hit = budget.filter(b => b.item === r.category)[0];
+  // 적요 → 비목: 항목 폴더가 있으면 그걸로, 없으면 AI가 고른 것으로
+  const hit = folderItem || budget.filter(b => b.item === r.category)[0];
   if (hit) {
     rec.jeokyo = hit.item;
     rec.bimok = hit.group;
@@ -164,15 +184,17 @@ function handleFile_(sheet, file, person) {
   if (!d) warnings.push('날짜를 못 읽었어요');
   if (!hhmm) warnings.push('결제 시각을 못 읽었어요(증빙번호 확인)');
   if (!rec.amount) warnings.push('금액을 못 읽었어요');
-  if (!budget.length) warnings.push('예산표 탭(' + CONFIG.BUDGET_SHEET + ')을 못 찾아 적요를 비워 뒀어요');
-  else if (!hit) warnings.push('적요를 정하지 못했어요');
-  else if (r.category_sure !== true) warnings.push('적요 확인 필요(AI 추측: ' + (r.category_reason || '') + ')');
+  if (fixed && fixed.unmatched) warnings.push('폴더 이름(' + fixed.unmatched + ')이 예산표 항목과 안 맞아서 AI가 적요를 추측했어요');
+  if (!folderItem) {
+    if (!budget.length) warnings.push('예산표 탭(' + CONFIG.BUDGET_SHEET + ')을 못 찾아 적요를 비워 뒀어요');
+    else if (!hit) warnings.push('적요를 정하지 못했어요');
+    else if (r.category_sure !== true) warnings.push('적요 확인 필요(AI 추측: ' + (r.category_reason || '') + ')');
+  }
   if (r.note) warnings.push(r.note);
   if (isDuplicate_(sheet, rec)) warnings.push('⚠️ 중복 의심: 같은 증빙번호·금액이 이미 있어요');
 
   rec.warn = warnings.length > 0;
-  const ref = r.items ? '품목: ' + r.items : '';
-  rec.memo = warnings.concat(ref ? [ref] : []).join(' / ');
+  rec.memo = warnings.join(' / ');
 
   writeRow_(sheet, rec);
   return true;
@@ -363,6 +385,48 @@ function getBudgetItems_() {
   }
   if (!budgetCache.length) Logger.log('예산표에서 항목을 못 읽었어요. 월별구분/월계 줄과 열 번호를 확인해 주세요.');
   return budgetCache;
+}
+
+/** 폴더 이름을 예산표 적요와 맞춰 보기. 띄어쓰기와 괄호 속 날짜는 무시 (예: '여름성경학교' = '여름성경학교(7/24금~25토)') */
+function matchBudgetItem_(name) {
+  const norm = t => String(t).replace(/\(.*?\)/g, '').replace(/\s+/g, '');
+  const key = norm(name);
+  if (!key) return null;
+  return getBudgetItems_().filter(b => b.item === name || norm(b.item) === key)[0] || null;
+}
+
+/** 폴더 이름으로 쓸 짧은 이름 (괄호 속 날짜 빼기) */
+function shortItemName_(item) {
+  return item.replace(/\(.*?\)/g, '').trim() || item;
+}
+
+/** 메뉴에서 실행: 모든 선생님 폴더 안에 예산 항목 폴더를 만들어요 (이미 있는 건 건너뜀) */
+function makeCategoryFolders() {
+  const budget = getBudgetItems_();
+  const ui = SpreadsheetApp.getUi();
+  if (!budget.length) {
+    ui.alert('예산표 탭(' + CONFIG.BUDGET_SHEET + ')에서 항목을 못 읽었어요. 코드의 BUDGET_SHEET 이름을 확인해 주세요.');
+    return;
+  }
+  const root = DriveApp.getFolderById(CONFIG.ROOT_FOLDER_ID);
+  const people = root.getFolders();
+  const made = [];
+  while (people.hasNext()) {
+    const teacher = people.next();
+    if (SKIP_FOLDERS.indexOf(teacher.getName()) !== -1) continue;
+    const have = [];
+    const subs = teacher.getFolders();
+    while (subs.hasNext()) {
+      const hit = matchBudgetItem_(subs.next().getName());
+      if (hit) have.push(hit.item);
+    }
+    let n = 0;
+    budget.forEach(b => {
+      if (have.indexOf(b.item) === -1) { teacher.createFolder(shortItemName_(b.item)); n++; }
+    });
+    made.push(teacher.getName() + ': ' + n + '개');
+  }
+  ui.alert('항목 폴더를 만들었어요.\n' + (made.join('\n') || '선생님 폴더가 없어요.'));
 }
 
 /** 적요 고르기 안내문 */
