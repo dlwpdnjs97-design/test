@@ -190,6 +190,8 @@ function handleFile_(sheet, file, person, fixed) {
     else if (!hit) warnings.push('적요를 정하지 못했어요');
     else if (r.category_sure !== true) warnings.push('적요 확인 필요(AI 추측: ' + (r.category_reason || '') + ')');
   }
+  const noBudget = noBudgetWarning_(hit, d);
+  if (noBudget) warnings.push(noBudget);
   if (r.note) warnings.push(r.note);
   if (isDuplicate_(sheet, rec)) warnings.push('⚠️ 중복 의심: 같은 증빙번호·금액이 이미 있어요');
 
@@ -370,21 +372,41 @@ function getBudgetItems_() {
     Logger.log('예산표 탭을 찾을 수 없어요: ' + CONFIG.BUDGET_SHEET);
     return budgetCache;
   }
-  const g = CONFIG.BUDGET_GROUP_COL, it = CONFIG.BUDGET_ITEM_COL;
-  const left = Math.min(g, it);
-  const rows = sh.getRange(1, left, sh.getLastRow(), Math.abs(g - it) + 1).getValues();
+  const g = CONFIG.BUDGET_GROUP_COL - 1, it = CONFIG.BUDGET_ITEM_COL - 1;   // 0부터 세는 칸 번호
+  const rows = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getValues();
   let started = false;
   let group = '';
+  let monthCols = {};                           // { 1: 1월 칸 번호, 2: 2월 칸 번호, … }
   for (const row of rows) {
-    const gv = String(row[g - left]).trim();
-    const iv = String(row[it - left]).trim();
-    if (!started) { if (gv === '월별구분') started = true; continue; }
+    const gv = String(row[g]).trim();
+    const iv = String(row[it]).trim();
+    if (!started) {
+      if (gv === '월별구분') {
+        started = true;
+        row.forEach((v, i) => {                 // 제목 줄에서 '1월'~'12월' 칸 찾기
+          const m = /^(\d{1,2})\s*월$/.exec(String(v).trim());
+          if (m) monthCols[Number(m[1])] = i;
+        });
+      }
+      continue;
+    }
     if (gv === '월계') break;
     if (gv) group = gv;                         // 합쳐진 칸은 첫 줄에만 값이 있어서 이어서 씀
-    if (iv) budgetCache.push({ group: group, item: iv });
+    if (!iv) continue;
+    const months = {};
+    Object.keys(monthCols).forEach(m => { months[m] = Number(row[monthCols[m]]) || 0; });
+    budgetCache.push({ group: group, item: iv, months: months });
   }
   if (!budgetCache.length) Logger.log('예산표에서 항목을 못 읽었어요. 월별구분/월계 줄과 열 번호를 확인해 주세요.');
   return budgetCache;
+}
+
+/** 결제한 달에 그 항목 예산이 비어 있으면 경고 문구, 아니면 빈 문자열 */
+function noBudgetWarning_(hit, date) {
+  if (!hit || !hit.months || !date) return '';
+  const m = date.getMonth() + 1;
+  if (!(m in hit.months)) return '';             // 예산표에서 그 달 칸을 못 찾으면 검사하지 않음
+  return hit.months[m] > 0 ? '' : '⚠️ ' + m + '월에는 ' + hit.item + ' 예산이 없어요(예산표 확인)';
 }
 
 /** 폴더 이름을 예산표 적요와 맞춰 보기. 띄어쓰기와 괄호 속 날짜는 무시 (예: '여름성경학교' = '여름성경학교(7/24금~25토)') */
