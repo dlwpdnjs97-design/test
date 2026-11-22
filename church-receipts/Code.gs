@@ -76,6 +76,7 @@ const C = { MONTH: 1, PROOF: 2, DATE: 3, BIMOK: 4, JEOKYO: 5, OUT: 6, IN: 7, BAL
             VENDOR: 11, PHOTO: 12, CHECK: 13, MEMO: 14 };
 const UNKNOWN_ITEM = '모름';
 let budgetCache = null;           // 예산표 항목 목록 (한 번 실행에 한 번만 읽음)
+let budgetMeta = {};              // 예산표의 제목 줄·월계 줄 번호, 월별 칸 번호
 const MAIN_COLS = 11;             // 원래 출납장 칸 수 (A~K)
 let stopRun = false;              // 사용량 한도 등에 걸리면 이번 실행은 여기서 멈춤
 
@@ -417,6 +418,7 @@ function getBudgetItems_() {
     if (!started) {
       if (gv === '월별구분') {
         started = true;
+        budgetMeta.headerRow = ri + 1;
         row.forEach((v, i) => {                 // 제목 줄에서 '1월'~'12월' 칸 찾기
           const m = /^(\d{1,2})\s*월$/.exec(String(v).trim());
           if (m) monthCols[Number(m[1])] = i;
@@ -424,13 +426,15 @@ function getBudgetItems_() {
       }
       continue;
     }
-    if (gv === '월계') break;
+    if (gv === '월계') { budgetMeta.totalRow = ri + 1; break; }
     if (gv) group = gv;                         // 합쳐진 칸은 첫 줄에만 값이 있어서 이어서 씀
     if (!iv) continue;
     const months = {};
     Object.keys(monthCols).forEach(m => { months[m] = Number(row[monthCols[m]]) || 0; });
     budgetCache.push({ group: group, item: iv, months: months, row: ri + 1 });   // row: 예산표의 실제 행 번호
   }
+  budgetMeta.monthCols = {};               // 1부터 세는 열 번호로 저장
+  Object.keys(monthCols).forEach(m => { budgetMeta.monthCols[m] = monthCols[m] + 1; });
   if (!budgetCache.length) Logger.log('예산표에서 항목을 못 읽었어요. 월별구분/월계 줄과 열 번호를 확인해 주세요.');
   return budgetCache;
 }
