@@ -84,6 +84,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('🧾 영수증')
     .addItem('지금 영수증 처리하기', 'processReceipts')
     .addItem('영수증 출력물 만들기', 'makeReceiptDoc')
+    .addItem('월별 지출결의서 만들기', 'makeMonthlyReport')
     .addSeparator()
     .addItem('선생님 폴더에 항목 폴더 만들기', 'makeCategoryFolders')
     .addToUi();
@@ -409,7 +410,8 @@ function getBudgetItems_() {
   let started = false;
   let group = '';
   let monthCols = {};                           // { 1: 1월 칸 번호, 2: 2월 칸 번호, … }
-  for (const row of rows) {
+  for (let ri = 0; ri < rows.length; ri++) {
+    const row = rows[ri];
     const gv = String(row[g]).trim();
     const iv = String(row[it]).trim();
     if (!started) {
@@ -427,7 +429,7 @@ function getBudgetItems_() {
     if (!iv) continue;
     const months = {};
     Object.keys(monthCols).forEach(m => { months[m] = Number(row[monthCols[m]]) || 0; });
-    budgetCache.push({ group: group, item: iv, months: months });
+    budgetCache.push({ group: group, item: iv, months: months, row: ri + 1 });   // row: 예산표의 실제 행 번호
   }
   if (!budgetCache.length) Logger.log('예산표에서 항목을 못 읽었어요. 월별구분/월계 줄과 열 번호를 확인해 주세요.');
   return budgetCache;
